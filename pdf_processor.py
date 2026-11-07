@@ -339,6 +339,7 @@ def process_pedagogical_pdf(
 
         # Root form XObject blanking if present (for LaTeX/Word templates like 2.pdf)
         root_xobjs = [x for x in page.get_xobjects() if x[2] == 0]
+        stream_was_blanked = False
         if root_xobjs:
             root_form = root_xobjs[0]
             try:
@@ -356,23 +357,26 @@ def process_pedagogical_pdf(
                     c = b.group(0)
                     if '208.253' in c or '187.197' in c or '384.301' in c or any(coord in c for coord in ['428.918', '428.939', '462.275', '450.905', '443.884']):
                         to_blank.append(b)
+                    # For memoire banner: MUST check y > 795 so as NOT to match 484.992 at y=767 which is :السنة الدراسية!
                     elif custom_mem_num is not None:
-                        if '12.952 Tf' in c and any(k in c for k in ['483.996', '466.188', '484.', '466.']):
+                        if '12.952 Tf' in c and any(k in c for k in ['483.996', '466.188', '484.', '466.']) and any(y in c for y in ['802.', '803.', '804.', '808.', '795.', '800.', '801.']):
                             to_blank.append(b)
-                for b in to_blank:
-                    span = b.span()
-                    stream = stream[:span[0]] + (' ' * (span[1] - span[0])) + stream[span[1]:]
-                doc.update_stream(root_form[0], stream.encode('latin1'))
+                if to_blank:
+                    stream_was_blanked = True
+                    for b in to_blank:
+                        span = b.span()
+                        stream = stream[:span[0]] + (' ' * (span[1] - span[0])) + stream[span[1]:]
+                    doc.update_stream(root_form[0], stream.encode('latin1'))
             except Exception:
                 pass
 
         # Dynamic baseline and coordinate discovery
         d = page.get_text('dict')
-        sch_origin_y = 61.91
+        sch_origin_y = 60.43
         sch_x0 = None
-        yr_origin_y = 76.26
+        yr_origin_y = 74.0
         yr_x0 = None
-        lvl_origin_y = 60.64
+        lvl_origin_y = 58.63
         lvl_x0 = None
         mem_origin_y = None
         
@@ -436,33 +440,36 @@ def process_pedagogical_pdf(
                                 if abs(s_y - t_y) < 14 and s['bbox'][2] <= teacher_lbl['bbox'][0] + 5:
                                     teacher_val = s
 
-        # Clean old text using PyMuPDF redactions (without touching vector borders / lines)
-        if lvl_span:
-            p_y0 = lvl_span['bbox'][1] - 3
-            p_y1 = lvl_span['bbox'][3] + 3
-            page.add_redact_annot(fitz.Rect(max(140, lvl_span['bbox'][0] - 130), p_y0, lvl_span['bbox'][0] - 1, p_y1), fill=False)
+        # Clean old text ONLY if stream was NOT blanked (e.g. Narjes Marwani template)
+        # In stream-blanked templates (e.g. 2.pdf), values are ALREADY cleared at byte level
+        if not stream_was_blanked:
+            if lvl_span:
+                orig_y = lvl_span['origin'][1]
+                page.add_redact_annot(fitz.Rect(max(140, lvl_span['bbox'][0] - 120), orig_y - 9.5, lvl_span['bbox'][0] - 1, orig_y + 2.5), fill=False)
 
-        if sch_span:
-            s_y0 = sch_span['bbox'][1] - 3
-            s_y1 = sch_span['bbox'][3] + 3
-            page.add_redact_annot(fitz.Rect(max(340, sch_span['bbox'][0] - 150), s_y0, sch_span['bbox'][0] - 1, s_y1), fill=False)
+            if sch_span:
+                orig_y = sch_span['origin'][1]
+                page.add_redact_annot(fitz.Rect(max(340, sch_span['bbox'][0] - 140), orig_y - 9.5, sch_span['bbox'][0] - 1, orig_y + 2.5), fill=False)
 
-        if yr_span:
-            y_y0 = yr_span['bbox'][1] - 3
-            y_y1 = yr_span['bbox'][3] + 3
-            page.add_redact_annot(fitz.Rect(max(380, yr_span['bbox'][0] - 90), y_y0, yr_span['bbox'][0] - 1, y_y1), fill=False)
+            if yr_span:
+                orig_y = yr_span['origin'][1]
+                page.add_redact_annot(fitz.Rect(max(400, yr_span['bbox'][0] - 80), orig_y - 9.5, yr_span['bbox'][0] - 1, orig_y + 2.5), fill=False)
 
-        if teacher_val:
-            page.add_redact_annot(fitz.Rect(teacher_val['bbox']), fill=False)
+            if teacher_val:
+                page.add_redact_annot(fitz.Rect(teacher_val['bbox']), fill=False)
 
-        if custom_mem_num is not None:
-            if digit_span:
+            if custom_mem_num is not None:
+                if digit_span:
+                    page.add_redact_annot(fitz.Rect(digit_span['bbox']), fill=False)
+                elif mem_span:
+                    page.add_redact_annot(fitz.Rect(mem_span['bbox']), fill=False)
+
+            page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE, graphics=0)
+        else:
+            # On stream-blanked pages, only redact separate digit if digit_span != mem_span
+            if custom_mem_num is not None and digit_span and mem_span and digit_span != mem_span:
                 page.add_redact_annot(fitz.Rect(digit_span['bbox']), fill=False)
-            elif mem_span:
-                page.add_redact_annot(fitz.Rect(mem_span['bbox']), fill=False)
-
-        # Apply redactions strictly for text (preserve graphics/borders 100%)
-        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE, graphics=0)
+                page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE, graphics=0)
 
         # Draw new text
         page.insert_font(fontname='AmiriBold', fontfile=FONT_BOLD_PATH)
