@@ -116,15 +116,18 @@ with col1:
             with st.expander("📑 عرض وتعديل أرقام المذكرات لكل صفحة", expanded=True):
                 for i, fiche in enumerate(fiches):
                     p_num = fiche['page_num']
+                    pages = fiche.get('pages', [p_num])
                     def_val = f"{(start_seq + i):02d}" if auto_seq else fiche['number']
                     c_p, c_t, c_n = st.columns([1, 2, 1])
                     with c_p:
-                        st.write(f"📄 **صفحة {p_num}**")
+                        p_label = f"ص {pages[0]}-{pages[-1]}" if len(pages) > 1 else f"صفحة {p_num}"
+                        st.write(f"📄 **{p_label}**")
                     with c_t:
                         st.caption(f"{fiche['topic']}")
                     with c_n:
                         user_n = st.text_input(f"الرقم (P.{p_num})", value=def_val, key=f"mem_{p_num}", label_visibility="collapsed")
-                        memoire_custom[p_num] = user_n
+                        for p in pages:
+                            memoire_custom[p] = user_n
 
 with col2:
     st.subheader("4. Traitement & Aperçu")

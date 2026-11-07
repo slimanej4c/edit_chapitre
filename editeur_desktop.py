@@ -505,13 +505,15 @@ class PDFEditorApp:
                 row.pack(fill=tk.X, expand=True, pady=1)
 
                 # Page tag
+                pages = fiche.get('pages', [p_num])
+                p_text = f"📄 ص {pages[0]}-{pages[-1]}" if len(pages) > 1 else f"📄 صفحة {p_num}"
                 lbl_page = tk.Label(
                     row,
-                    text=f"📄 صفحة {p_num}",
+                    text=p_text,
                     font=("Arial", 10, "bold"),
                     fg="#1D4ED8",
                     bg=bg_row,
-                    width=9,
+                    width=10,
                     anchor="w"
                 )
                 lbl_page.pack(side=tk.LEFT)
@@ -614,10 +616,14 @@ class PDFEditorApp:
 
             # Récupérer les numéros de mémoires personnalisés
             memoire_numbers = {}
-            for p_num, entry in self.memoire_entries.items():
-                val = entry.get().strip()
-                if val:
-                    memoire_numbers[p_num] = val
+            for fiche in self.detected_fiches:
+                p_num = fiche['page_num']
+                entry = self.memoire_entries.get(p_num)
+                if entry:
+                    val = entry.get().strip()
+                    if val:
+                        for p in fiche.get('pages', [p_num]):
+                            memoire_numbers[p] = val
 
             dir_name = os.path.dirname(input_pdf)
             base_name = os.path.splitext(os.path.basename(input_pdf))[0]

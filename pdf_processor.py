@@ -54,7 +54,7 @@ def detect_memoires_in_pdf(input_pdf_path):
     """
     Algorithme universel et tout-terrain de détection des fiches / mémorandums dans un PDF.
     Garantit 100% de détection sur tout type d'encodage (Unicode standard,
-    Presentation Forms, polices personnalisées, spans séparés, chiffres orientaux).
+    Presentation Forms, polices personnalisées arabes, spans séparés, chiffres orientaux).
     """
     if not input_pdf_path:
         return []
@@ -66,6 +66,11 @@ def detect_memoires_in_pdf(input_pdf_path):
     fiches = []
     total_pages = len(doc)
     
+    # Titre de secours extrait du nom du fichier
+    base = os.path.splitext(os.path.basename(clean_path))[0]
+    clean_fallback = re.sub(r'^(مذكرات|مذكرة|المذكرات|محور|المحور)\s*', '', base)
+    clean_fallback = re.sub(r'[\d_\-\(\)]+', ' ', clean_fallback).strip()
+
     for p_idx in range(total_pages):
         page = doc[p_idx]
         text = page.get_text()
@@ -82,21 +87,23 @@ def detect_memoires_in_pdf(input_pdf_path):
                         if s['bbox'][1] < 220:
                             s_norm = normalize_arabic(s['text'])
                             top_spans.append((s, s_norm))
-                            if any(k in s_norm for k in ['مذكر', 'بطاق', 'جذاذ', 'fiche']):
+                            is_mem = (any(k in s_norm for k in ['مذكر', 'بطاق', 'جذاذ', 'fiche']) or
+                                      any(k in s['text'] for k in ['\x9c\x92C', 'œ’C', '\xadr\x95@\x9b', '­r•@›']))
+                            if is_mem:
                                 mem_spans.append((s, s_norm))
                                 
-        # Ne pas traiter la page de garde comme une fiche si c'est un sommaire / index
+        has_mem = len(mem_spans) > 0
+        has_table = (
+            (('مستوي' in norm_text or 'شعبة' in norm_text) and 
+             any(w in norm_text for w in ['ثانوي', 'استاذ', 'ميدان', 'محور', 'مؤسس', 'وحدة', 'درس'])) or
+            any(k in text for k in ['\x9c\x92C', 'œ’C', '\xadr\x95@\x9b', '­r•@›', 'TsF¥m', '«wtsm'])
+        )
+
+        # Ne pas traiter la page de garde comme une fiche si c'est un sommaire / index / page de titre
         if p_idx == 0 and total_pages > 1:
             if len(mem_spans) >= 2 or any(k in norm_text for k in ['فهرس', 'محتويات', 'المحتويات']) or ('محور' in norm_text and total_pages > 2):
                 continue
 
-        # Détection de l'en-tête pédagogique :
-        # 1. Contient 'مذكرة' ou équivalent dans le haut de page
-        # 2. OU contient 'مستوي' / 'شعبة' avec un mot-clé pédagogique
-        has_mem = len(mem_spans) > 0
-        has_table = (('مستوي' in norm_text or 'شعبة' in norm_text) and 
-                     any(w in norm_text for w in ['ثانوي', 'استاذ', 'ميدان', 'محور', 'مؤسس', 'وحدة', 'درس']))
-        
         if not (has_mem or has_table):
             continue
 
@@ -104,7 +111,7 @@ def detect_memoires_in_pdf(input_pdf_path):
         
         # Priorité 1 : Chiffres dans le même span que le mot 'مذكرة'
         for s, s_norm in mem_spans:
-            m = re.search(r'(\d+)', s_norm)
+            m = re.search(r'(\d+)', s['text']) or re.search(r'(\d+)', s_norm)
             if m:
                 cur_num = m.group(1).zfill(2)
                 break
@@ -118,7 +125,7 @@ def detect_memoires_in_pdf(input_pdf_path):
                     s_y = (s['bbox'][1] + s['bbox'][3]) / 2
                     if abs(s_y - target_y) < 16:
                         if abs(s['bbox'][0] - target_s['bbox'][2]) < 150 or abs(s['bbox'][2] - target_s['bbox'][0]) < 150:
-                            m = re.search(r'(\d+)', s_norm)
+                            m = re.search(r'(\d+)', s['text']) or re.search(r'(\d+)', s_norm)
                             if m:
                                 cur_num = m.group(1).zfill(2)
                                 break
@@ -132,12 +139,18 @@ def detect_memoires_in_pdf(input_pdf_path):
                 if s != target_s:
                     s_x = (s['bbox'][0] + s['bbox'][2]) / 2
                     if abs(s_x - target_x) < 80 and 0 <= (s['bbox'][1] - target_y) < 40:
-                        m = re.search(r'^\s*(\d+)\s*$', s_norm)
+                        m = re.search(r'^\s*(\d+)\s*$', s['text']) or re.search(r'^\s*(\d+)\s*$', s_norm)
                         if m:
                             cur_num = m.group(1).zfill(2)
                             break
                                 
-        # Priorité 4 : Recherche multi-lignes dans le texte brut
+        # Priorité 4 : Expression régulière sur texte brut (y compris encodage hérité)
+        if not cur_num:
+            m_leg = re.search(r'(\d+)\s*[\x9c\x92Cœ’C]|[\x9c\x92Cœ’C]\s*(\d+)', text)
+            if m_leg:
+                cur_num = (m_leg.group(1) or m_leg.group(2)).zfill(2)
+
+        # Priorité 5 : Recherche multi-lignes dans le texte brut
         if not cur_num:
             lines = [l.strip() for l in norm_text.splitlines()[:30] if l.strip()]
             for idx, line in enumerate(lines):
@@ -157,7 +170,7 @@ def detect_memoires_in_pdf(input_pdf_path):
                             cur_num = m3.group(1).zfill(2)
                             break
 
-        # Priorité 5 : Boîte de titre en haut à droite (x > 440, y < 120)
+        # Priorité 6 : Boîte de titre en haut à droite (x > 440, y < 120)
         if not cur_num:
             for s, s_norm in top_spans:
                 if s['bbox'][0] > 440 and s['bbox'][1] < 120:
@@ -181,15 +194,23 @@ def detect_memoires_in_pdf(input_pdf_path):
                     topic = lines[idx+1].replace('.', '').replace(':', '').strip()
                 break
 
+        if not topic and clean_fallback:
+            topic = clean_fallback
+
         if not cur_num:
             cur_num = f'{len(fiches)+1:02d}'
 
-        fiches.append({
-            'page_index': p_idx,
-            'page_num': p_idx + 1,
-            'number': cur_num,
-            'topic': topic[:45] if topic else f'Fiche {len(fiches)+1}'
-        })
+        # Si le même numéro de fiche se répète sur des pages consécutives (en-tête courant)
+        if fiches and fiches[-1]['number'] == cur_num:
+            fiches[-1]['pages'].append(p_idx + 1)
+        else:
+            fiches.append({
+                'page_index': p_idx,
+                'page_num': p_idx + 1,
+                'pages': [p_idx + 1],
+                'number': cur_num,
+                'topic': topic[:45] if topic else f'Fiche {len(fiches)+1}'
+            })
         
     doc.close()
     return fiches
@@ -226,7 +247,11 @@ def process_pedagogical_pdf(
     # ---------------------------------------------------------
     page1 = doc[0]
     p1_text = page1.get_text()
-    if 'محور' in p1_text or 'مذكرات' in p1_text or 'ثانوية' in p1_text:
+    p1_norm = normalize_arabic(p1_text)
+    has_p1_legacy = any(k in p1_text for k in ['\x9c\x92C', 'œ’C', '\xadr\x95@\x9b', '­r•@›', 'TsF¥m', '«wtsm'])
+    is_cover_page = ('محور' in p1_norm or ('ثانوي' in p1_norm and 'مذكر' not in p1_norm)) and not has_p1_legacy and total_pages > 1
+
+    if is_cover_page:
         # Remove teacher stamp
         contents = page1.read_contents().replace(b'/Im20 Do', b'        ')
         doc.update_stream(page1.get_contents()[0], contents)
@@ -308,17 +333,18 @@ def process_pedagogical_pdf(
     # ---------------------------------------------------------
     # 3. DETECT & PROCESS HEADER PAGES
     # ---------------------------------------------------------
-    for p_idx in range(1, total_pages):
+    start_p_idx = 1 if is_cover_page else 0
+    for p_idx in range(start_p_idx, total_pages):
         page = doc[p_idx]
         text = page.get_text()
         norm_text = normalize_arabic(text)
         
-        # Check if page has pedagogical header table or memoire banner
+        has_legacy = any(k in text for k in ['\x9c\x92C', 'œ’C', '\xadr\x95@\x9b', '­r•@›', 'TsF¥m', '«wtsm'])
         has_table = (('مستوي' in norm_text or 'شعبة' in norm_text) and 
                      any(w in norm_text for w in ['ثانوي', 'استاذ', 'ميدان', 'محور', 'مؤسس', 'وحدة', 'درس']))
         has_mem = any(k in norm_text[:600] for k in ['مذكر', 'بطاق', 'جذاذ', 'fiche'])
         
-        if not (has_table or has_mem):
+        if not (has_table or has_mem or has_legacy):
             if progress_callback:
                 progress_callback(p_idx + 1, total_pages)
             continue
@@ -336,6 +362,60 @@ def process_pedagogical_pdf(
                 custom_mem_num = str(custom_mem_num).strip()
                 if custom_mem_num.isdigit() and len(custom_mem_num) == 1:
                     custom_mem_num = '0' + custom_mem_num
+
+        # -----------------------------------------------------
+        # BRANCH A : POLICES ARABES HÉRITÉES (ArabEyes / Dimnah / Win-1256)
+        # -----------------------------------------------------
+        if has_legacy:
+            m = re.search(r'(\d+)\s*[\x9c\x92Cœ’C]|[\x9c\x92Cœ’C]\s*(\d+)', text)
+            orig_num = (m.group(1) or m.group(2)).zfill(2) if m else ''
+            
+            cur_mem = custom_mem_num if custom_mem_num else (orig_num if orig_num else f'{p_idx+1:02d}')
+            cur_mem = str(cur_mem).strip()
+            if cur_mem.isdigit() and len(cur_mem) == 1:
+                cur_mem = '0' + cur_mem
+                
+            page.add_redact_annot(fitz.Rect(30, 0, 585, 27), fill=False)
+            page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE, graphics=0)
+            
+            for xref in page.get_contents():
+                try:
+                    data = doc.xref_stream(xref).decode('latin1', errors='ignore')
+                    orig_len = len(data)
+                    for m_img in list(re.finditer(r'q\s*q\s*[\d\.\s]+749\.92\s*cm\s*/X\d+\s*Do\s*Q\s*Q', data)):
+                        sp = m_img.span()
+                        data = data[:sp[0]] + (' ' * (sp[1] - sp[0])) + data[sp[1]:]
+                    if len(data) != orig_len or data != doc.xref_stream(xref).decode('latin1', errors='ignore'):
+                        doc.update_stream(xref, data.encode('latin1'))
+                except Exception:
+                    pass
+                    
+            page.insert_font(fontname='AmiriBold', fontfile=FONT_BOLD_PATH)
+            
+            # School (Right)
+            sch_str = f'المؤسسة: {school_name}'
+            sch_bidi = get_display(arabic_reshaper.reshape(sch_str))
+            w_sch = font_bold.text_length(sch_bidi, fontsize=11.5)
+            page.insert_text(fitz.Point(582 - w_sch, 20), sch_bidi, fontname='AmiriBold', fontsize=11.5, color=(0, 0, 0))
+            
+            # Memoire (Center)
+            mem_str = f'مذكرة رقم {cur_mem}'
+            mem_bidi = get_display(arabic_reshaper.reshape(mem_str))
+            w_mem = font_bold.text_length(mem_bidi, fontsize=12.5)
+            page.insert_text(fitz.Point((612 - w_mem) / 2, 20), mem_bidi, fontname='AmiriBold', fontsize=12.5, color=(0, 0, 0))
+            
+            # Teacher (Left)
+            t_str = f'الأستاذ: {teacher_name}'
+            t_bidi = get_display(arabic_reshaper.reshape(t_str))
+            page.insert_text(fitz.Point(32, 20), t_bidi, fontname='AmiriBold', fontsize=11.5, color=(0, 0, 0))
+            
+            # Crisp Dividing Line
+            page.draw_line(fitz.Point(32.255, 27.643), fitz.Point(585.011, 27.643), color=(0, 0, 0), width=0.996)
+            
+            modified_pages.append(p_idx + 1)
+            if progress_callback:
+                progress_callback(p_idx + 1, total_pages)
+            continue
 
         # Root form XObject blanking if present (for LaTeX/Word templates like 2.pdf)
         root_xobjs = [x for x in page.get_xobjects() if x[2] == 0]
